@@ -1,0 +1,68 @@
+%% DynaCat + StatiCat: Post-Hoc t-tests
+% Run t-tests on format x category interactions
+%
+% JC, April 2025
+
+%% Setup
+ExpDir = '/share/kalanit/biac2/kgs/projects/DynaCat/code/justin';
+DataDir = fullfile(ExpDir, 'data');
+FigDir = fullfile(ExpDir, 'figures', 't-tests');
+
+addpath(genpath('/share/kalanit/biac2/kgs/projects/DynaCat/code/scripts/rsms'));
+subjects = {'AX', 'BR', 'CT', 'DO', 'HC', 'IK', 'KP', 'RU', 'RY', 'VL'};
+
+ROI_types = {'IPS', 'STS', 'LOTC', 'VTC', 'IF_DO'}; % no interaction for VTC
+category_labels = ["words", "dogs", "people", "hands", "faces", "cars", ...
+    "balls", "scenes"];
+n_categories = length(category_labels);
+n_conds = 384;
+
+%% Run t-tests
+cd(FigDir);
+load(fullfile(ExpDir, 'data', 'scores.mat'), 'cat_scores_d', 'cat_scores_s');
+fprintf('Running t-tests...\n\n');
+
+results = zeros(length(ROI_types), n_categories);
+for r = 1:length(ROI_types)
+    ROI = ROI_types{r};
+    if strcmp(ROI, 'IF_DO')
+        ROI = 'VLPFC';
+    end
+
+    dfs = nan(n_categories, 1);
+    t_values = nan(n_categories, 1);
+    p_values = nan(n_categories, 1);
+
+    for c = 1:n_categories
+        lh_idx = 2*r - 1; % lh roi idx
+        rh_idx = 2*r; % rh roi idx
+        d_distrib = [permute(cat_scores_d(c,lh_idx,:), [3 2 1]); ...
+            permute(cat_scores_d(c,rh_idx,:), [3 2 1])];
+        s_distrib = [permute(cat_scores_s(c,lh_idx,:), [3 2 1]); ...
+            permute(cat_scores_s(c,rh_idx,:), [3 2 1])];
+    
+        [h, p, ci, stats] = ttest(d_distrib, s_distrib);
+        dfs(c) = stats.df;
+        t_values(c) = stats.tstat;
+        p_values(c) = p;
+    end
+
+    % print results
+    results = [dfs t_values p_values];
+    tbl = array2table(results, VariableNames = {'DF', 't', 'pValue'}, ...
+        RowNames = category_labels);
+    filename = [ROI ' t-tests'];
+    title = [ROI ' Post-Hoc t-test Results'];
+    fig = uifigure("Name", filename, "Position", [0 0 400 260]);
+    uit = uitable(fig, "Data", tbl(:,:), "Position", [20 20 350 210]);
+    title_element = uilabel(fig, 'Text', title, 'Position', [120 230 300 20], ...
+        'FontWeight', 'bold');
+
+    % save as png
+    outfile = fullfile(FigDir, [filename '.png']);
+    exportapp(fig, outfile);
+    close all
+end
+
+fprintf('All done\n\n');
+

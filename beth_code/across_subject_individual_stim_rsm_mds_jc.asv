@@ -1,0 +1,421 @@
+%% DynaCat + Staticat: Anat ROI RSMs, individual stimuli
+%   -Computes multivoxel and plots RSMs using indiviudal stimuli as conditions 
+%       for each subject and then across subjects within anatomical ROIs.
+%   -Choose an ampType. (ampType = 'zscore' or ampType = 'subtractedBetas')
+% 
+% BR, JC
+
+%% Set parameters
+subjects = {'AX' 'BR' 'CT' 'DO' 'HC' 'IK' 'KP' 'RU' 'RY' 'VL'};
+ROIs = {'lh_IPS' 'rh_IPS'};
+
+% set parameters
+eventsPerBlock = 4; % length of trial is 4s and the TR is 1s
+ampType = 'zscore';
+plot_type = 'sym_means';
+
+ExpDir = '/share/kalanit/biac2/kgs/projects/DynaCat/';
+addpath(genpath('/share/kalanit/biac2/kgs/projects/DynaCat/code/scripts/rsms/'))
+
+stimuli_icon_folder = '/share/kalanit/biac2/kgs/projects/DynaCat/stimuli/stimuli_icons/stimuli_icons_lower_res/dynacat_staticat_colored_icons';
+stimuli_icon_label = 'exp_colors';
+stimuli_icon_size = 0.015;
+categeory_color_point_size = 17;
+
+num_all_conds = 384;
+parfile_folders = 'individual_stim_parfiles_set1';
+
+category_labels = {'words-d', 'dogs-d', 'bodies-d', 'hands-d', 'faces-d', 'cars-d', 'balls-d', 'scenes-d'...
+    'words-s', 'dogs-s', 'bodies-s', 'hands-s', 'faces-s', 'cars-s', 'balls-s', 'scenes-s'};
+
+% load stimuli condition info (for group mds plot labels)
+all_stimuli_cond_parfile_path = fullfile(ExpDir, 'code', 'experiment_code', 'DynaCat', 'dynacat_stimuli', 'phase_scrambled_set1', 'all_stimuli_conditions.par');
+all_cond_parfile = {};
+fid = fopen(all_stimuli_cond_parfile_path, 'r');
+data = textscan(fid, '%f %s %s %s %f %f %f', 'Delimiter', '\t');
+fclose(fid);
+for i=1:length(data{1})
+    cond_num = data{1}(i);
+    cond = data{2}(i);
+    experiment = data{3}(i);
+    category = data{4}(i);
+    color_1 = data{5}(i);
+    color_2 = data{6}(i);
+    color_3 = data{7}(i);
+    color_code = [color_1 color_2 color_3];
+    line_data = [cond_num cond experiment category color_code];
+    all_cond_parfile = [all_cond_parfile; line_data];
+end
+all_cond_labels = all_cond_parfile(:, 2)';
+all_cond_label_colors = all_cond_parfile(:, 5);
+
+% make an array of point shapes for the mds
+all_cond_point_shapes = cell(size(all_cond_labels));
+for i = 1:numel(all_cond_labels)
+    if contains(all_cond_labels{i}, 'dynacat')
+        all_cond_point_shapes{i} = 'o';
+    elseif contains(all_cond_labels{i}, 'staticat')
+        all_cond_point_shapes{i} = '^';
+    end
+end
+
+%% Compute + plot MVP, RSM per subject + across subjects
+for r = 1:length(ROIs) % loop over ROIs
+    ROIname = ROIs{r}
+
+    % initialize across-subject rsm
+    across_subject_rsm = nan(num_all_conds, num_all_conds, length(subjects));
+    group_distance_matrix = nan(num_all_conds, num_all_conds, length(subjects));
+
+    for s=1:length(subjects)
+        % ===== get subject session info =====
+        subject = subjects{s};
+        [session_path, list_runs, datatype, scan] = dynacat_staticat_sessions(subject);
+
+        roi_name = [ROIname '_individual_stim_mean_rsm.mat'];
+        roi_file = fullfile(session_path, 'results', 'anat_rois_rsms', roi_name))
+        if ~isfile(roi_file)
+            cd(session_path)
+
+            % ===== add individual stim parfiles =====
+            parfiles = dir(fullfile(session_path, 'parfiles', parfile_folders));
+            newscans_parfiles = {parfiles(3:end).folder}';
+            newscans_parfiles = fullfile(newscans_parfiles, {parfiles(3:end).name}');
+
+            % ===== find condition info from parfiles =====
+            parfile_data = {};
+            for i=1:length(newscans_parfiles)
+                file_path = newscans_parfiles{i};
+                fid = fopen(file_path, 'r');
+                data = textscan(fid, '%s %f %s %f %f %f', 'Delimiter', '\t');
+                fclose(fid);
+                for ii=1:length(data{4})
+                    color_1 = data{4}(ii);
+                    color_2 = data{5}(ii);
+                    color_3 = data{6}(ii);
+                    color_code = [color_1 color_2 color_3];
+                    onset = str2double(data{1}(ii));
+                    cond_num = data{2}(ii);
+                    cond = data{3}(ii);
+                    line_data = [i onset cond_num cond color_code];
+                    parfile_data = [parfile_data; line_data];
+                end
+            end
+            sorted_parfile_data = sortrows(parfile_data, 3); % sort parfile data based on condition number
+
+            % remove baseline and task
+            % filtered_data = sorted_parfile_data(~strcmp(sorted_parfile_data(:, 4), 'baseline') & ~strcmp(sorted_parfile_data(:, 4), 'task-repeat'), :);
+            cond_nums = cell2mat(sorted_parfile_data(:, 3));
+            rowsToKeep = (cond_nums ~= 0) & (cond_nums ~= 999); % conds not seen by others for BR and IK are coded as 999
+            filtered_data = sorted_parfile_data(rowsToKeep, :);
+
+            % remove some repeating condition labels that snuck their way in
+            unique_items = {};
+            rows_to_keep = true(size(filtered_data, 1), 1);
+            for i = 1:size(filtered_data, 1)
+                item = filtered_data{i, 4};
+                if ismember(item, unique_items)
+                    rows_to_keep(i) = false;
+                else
+                    unique_items = [unique_items; item];
+                end
+            end
+            filtered_parfile_data = filtered_data(rows_to_keep, :);
+
+            labels = filtered_parfile_data(:, 4)';
+            label_colors = filtered_parfile_data(:, 5);
+
+            % make an array of point shapes for the mds
+            point_shapes = cell(size(labels));
+            for i = 1:numel(labels)
+                if contains(labels{i}, 'dynacat')
+                    point_shapes{i} = 'o';
+                elseif contains(labels{i}, 'staticat')
+                    point_shapes{i} = '^';
+                end
+            end
+
+            % numconds = length(labels);
+            parfile_cond_nums = cell2mat(filtered_parfile_data(:, 3));
+            numconds = length(unique(parfile_cond_nums));
+
+            % ===== plot rsm =====
+
+            % copy ROI over from mrVistaROI folder if nesecary
+            ROI_filepath = fullfile(session_path, '3DAnatomy', 'ROIs', [ROIname '.mat']);
+            ROI_filepath_in_mrVistaROI_dir = fullfile(session_path, '3DAnatomy', 'mrVistaROIs', [ROIname '.mat']);
+            if ~exist(ROI_filepath, 'file')
+                copyfile(ROI_filepath_in_mrVistaROI_dir, ROI_filepath);
+            end
+
+            % Set vANATOMY
+            hg=initHiddenGray(datatype, scan, ROIname);
+
+            % add individual stim parfiles
+            runs = list_runs;
+            hg = er_assignParfilesToScans(hg, runs, newscans_parfiles);
+
+            % Initialize multivoxel pattern
+            mv=mv_init(hg,ROIname,runs,datatype);
+            mvs = {mv};
+
+            % Set parameters
+            params = mvs{1}.params;
+            params.eventAnalysis = 1;
+            params.detrend = 1; % high-pass filter (remove the low frequency trend)
+            params.detrendFrames = 20;
+            params.inhomoCorrection = 1; % divide by mean (transforms from raw scanner units to % signal)
+            params.temporalNormalization = 0; % no matching 1st temporal frame
+            params.ampType = 'betas';
+            params.glmHRF = 3; % SPM hrf
+            params.eventsPerBlock = eventsPerBlock;
+            params.lowPassFilter = 0; % no temporal low pass filter of the data
+
+            mv.params = params;
+
+            % Apply GLM to multivoxel pattern
+            mv = mv_applyGlm(mv);
+
+            % get betas for each run and voxel
+            amps=mv_amps(mv);
+
+            % removes task condition from amps
+            amps=amps(:, 1:numconds);
+
+            % values to plot
+            z_values=mv_amps(mv);
+            % remove task
+            z_values=z_values(:, 1:numconds);
+
+            if strcmp(ampType, 'subtractedBetas') || strcmp(ampType, 'zscore')
+                % subtract mean beta from each voxel
+                mean_amps=mean(amps,2); % calculate the mean for each voxel
+                meanmat=mean_amps*ones(1,numconds);
+                subbetas=amps-meanmat;
+                % the values used for the correlations
+                z_values=subbetas;
+            end
+
+            if strcmp(ampType, 'zscore')
+                % normalize by the residual variance of the GLM in each voxel
+                % effectively after this step you have z-scoed your pattern
+                residualV = mv.glm.residual; % make this into functions
+                dof = mv.glm.dof;
+                residualvar = sum(residualV.^2)/dof; % calculate mean sqaure error
+                resd = sqrt(residualvar);
+                resd = resd';
+                resd_mat = repmat(resd, [1 numconds]); %turn into matrix
+                z_values = subbetas./resd_mat; % divide each beta by standard deviation of residual error
+            end
+
+            % Compute crosscorrelation matrices
+            rsm = zeros(numconds);
+            all_cond_rsm = NaN(num_all_conds, num_all_conds);
+            for i=1:numconds % calculate correlation between each condition
+                cond_num_x = cell2mat(filtered_parfile_data(i, 3));
+                for j=1:numconds
+                    c = corrcoef(z_values(:,i),z_values(:,j));
+                    rsm(i, j) = c(1, 2); % subject rsm
+
+                    cond_num_y = cell2mat(filtered_parfile_data(j, 3));
+                    all_cond_rsm(cond_num_x, cond_num_y) = rsm(i, j); % all cond subject rsm
+                end
+            end
+
+            % save subject rsm data
+            results_folder = fullfile(session_path, 'results', 'anat_rois_rsms');
+            if ~exist(results_folder,'dir')
+                mkdir(results_folder);
+            end
+            rsm_filepath = fullfile(results_folder, [ROIname '_individual_stim_mean_rsm.mat']);
+            save(rsm_filepath, 'rsm')
+            % save subject all cond rsm data
+            rsm_filepath = fullfile(results_folder, [ROIname '_individual_stim_all_conds_mean_rsm.mat']);
+            save(rsm_filepath, 'all_cond_rsm')
+            % save mv data struc
+            mv_filepath = fullfile(results_folder, [ROIname '_mv.mat']);
+            save(mv_filepath, 'mv')
+        end
+
+        across_subject_rsm(:, :, s) = all_cond_rsm; % add this subject to across subject rsm
+
+        close all % closing things to save memory
+
+        % ===== plot mds =====
+        cd(fullfile(session_path, 'results', 'anat_rois_rsms'))
+        
+        roi_name = [ROIname '_individual_stim_mean_rsm.mat']; % load from saved
+        roi_rsm = load(roi_name);
+        roi_rsm = roi_rsm.rsm;
+        
+        % make rsm into distance matrix
+        distance_matrix = ones(numconds)-roi_rsm;
+        all_cond_mds = ones(num_all_conds) - all_cond_rsm;
+        group_distance_matrix(:, :, s) = all_cond_mds; % add this subject to the across-subject mds
+        
+        [Y,eigvals] = cmdscale(distance_matrix);
+
+        % clear everything to save memory
+        close all
+        clear roi_rsm
+        clear rsm
+        clear all_cond_rsm
+        clear distance_matrix
+        clear Y
+        clear eigvals
+        clear mv
+        clear z_values
+        clear amps
+        clear allvals
+        clear cmap
+        clear mean_amps
+        clear meanmat
+        clear mvs
+        clear resd
+        clear resd_mat
+        clear residualV
+        clear residualvar
+        clear subbetas
+
+    end
+
+    % get mean across subjects rsms per roi
+    mean_rsm = nanmean(across_subject_rsm, 3); % should be 16 by 16 matirx
+    % plot across-subject rsm
+    figure('color', [ 1 1 1], 'name', [ROIname ' across-subjects (n=' num2str(length(subjects)) ') ' plot_type ': ' ROIname],'units','norm', 'position', [ 0.1 .1 .6 .6]);
+    imagesc(mean_rsm, [-.7 .7]); axis('image');
+    cmap = mrvColorMaps('coolhot'); colormap(cmap);
+    hcb=colorbar; title(hcb, 'correlation');
+
+    plot_title = [ROIname ' across-subjects rsm (n=' num2str(length(subjects)) ')'];
+
+    title(plot_title, 'Interpreter','none', 'FontSize',24);
+    set(gca,'Xtick', [1:24:max(num_all_conds)], 'XtickLabel',category_labels,'FontSize',10);
+    set(gca,'Ytick', [1:24:max(num_all_conds)], 'YtickLabel',category_labels, 'FontSize',10);
+    clim([-0.35, 0.35]);
+    brighten(0.6)
+    fontsize(12, 'points');
+
+    OutDir= fullfile(ExpDir ,'results', 'individual_stimuli_analysis', 'across_subjects');
+    if ~exist(OutDir,'dir')
+        mkdir(OutDir);
+    end
+    % save figure
+    group_analysis_dir=fullfile(ExpDir, 'results', 'individual_stimuli_analysis', 'across_subjects');
+    if ~exist(group_analysis_dir,'dir')
+        mkdir(group_analysis_dir);
+    end
+
+    RSM_filename_png=[ROIname '_rsm_across-subjects_individual_stim.png'];
+    outfile=fullfile(OutDir , RSM_filename_png);
+    saveas(gcf, outfile, 'png')
+
+    RSM_filename_svg=[ROIname '_rsm_across-subjects_individual_stim.svg'];
+    outfile=fullfile(OutDir , RSM_filename_svg);
+    saveas(gcf, outfile, 'svg')
+    
+    RSM_filename_fig=[ROIname '_rsm_across-subjects_individual_stim.fig'];
+    outfile=fullfile(OutDir , RSM_filename_fig);
+    savefig(gcf, outfile)
+    
+    % save across subject rsm data
+    across_subject_rsm_filepath = fullfile(ExpDir, 'results', 'individual_stimuli_analysis', 'across_subjects', [ROIname '_across_subject_rsm_individual_stim.mat']);
+    save(across_subject_rsm_filepath, 'across_subject_rsm')
+    % save mean rsm data
+    mean_rsm_filepath = fullfile(ExpDir, 'results', 'individual_stimuli_analysis', 'across_subjects', [ROIname '_mean_rsm_individual_stim.mat']);
+    save(mean_rsm_filepath, 'mean_rsm')
+
+    close all
+
+    % get mean MDS across-subjects per roi
+    mean_distance_matrix = nanmean(group_distance_matrix, 3);
+    [Y,eigvals] = cmdscale(mean_distance_matrix);
+    mean_distance_matrix_filepath = fullfile(OutDir, [ROIname '_mean_distance_matrix.mat']); % save to results folder
+    save(mean_distance_matrix_filepath, 'mean_distance_matrix')
+    
+    % plot each condition
+    stimuli_icon_size_roi = 0.016; % setting these here to constrain the size for my sfn plots
+    figure('color', [ 1 1 1], 'name', ['across_subjects_individual_stim_mds'],'units','pixels', 'position', [ 100 100 1080 1080]);
+    hold on 
+    for i = 1:numel(all_cond_labels)
+        scatter(Y(i,1), Y(i,2), 'Marker', 'none');
+
+        [stim_icon, map, alphachannel] = imread(fullfile(stimuli_icon_folder, [all_cond_labels{i} '.png']));
+        % stim_icon = flipdim(stim_icon ,1); 
+        % alphachannel = flipdim(alphachannel ,1); 
+
+        stim_icon = flipud(stim_icon); 
+        alphachannel = flipud(alphachannel); 
+
+        dx = stimuli_icon_size_roi; dy = stimuli_icon_size_roi;
+        xmin = Y(i, 1) - dx; xmax = Y(i, 1) + dx;
+        ymin = Y(i, 2) - dy; ymax = Y(i, 2) + dy;
+        h = image([xmin xmax], [ymin ymax], stim_icon, 'AlphaData', alphachannel);
+
+        hold on;
+    end
+
+    plot_title = [ROIname ' across-subjects individual stim mds n=(' num2str(numel(subjects)) ')'];
+    title(plot_title, 'Interpreter','none', 'FontSize',10);
+    ylabel('axis 1'); xlabel('axis 2');
+
+    % as png
+    filename_png=[ROIname '_individual_stim_mds_' stimuli_icon_label '.png'];
+    outfile=fullfile(OutDir , filename_png);
+    saveas(gcf, outfile, 'png')
+    saveas(gcf, fullfile(group_analysis_dir, filename_png), 'png')
+    % as svg
+    filename_svg=[ROIname '_individual_stim_mds_' stimuli_icon_label '.svg'];
+    outfile=fullfile(OutDir , filename_svg);
+    saveas(gcf, outfile, 'svg')
+    saveas(gcf, fullfile(group_analysis_dir, filename_svg), 'svg')
+    % as figure
+    filename_fig=[ROIname '_individual_stim_mds_' stimuli_icon_label '.fig'];
+    outfile=fullfile(OutDir , filename_fig);
+    savefig(gcf, outfile)
+    savefig(gcf, fullfile(group_analysis_dir, filename_fig))
+
+    close all
+
+    % make category colors mds
+    categeory_color_point_size_roi = 100; % setting these here to constrain the size for my sfn plots
+    figure('color', [ 1 1 1], 'name', [ROIname '_individual_stim_mds_category_colors'],'units','pixels', 'position', [100 100 1080 1080]);
+    hold on 
+    for i = 1:numel(all_cond_labels)
+        if i < 193
+            scatter(Y(i,1), Y(i,2), categeory_color_point_size_roi, 'Marker', all_cond_point_shapes{i}, 'MarkerFaceColor', all_cond_label_colors{i}, 'MarkerEdgeColor', all_cond_label_colors{i});
+        else
+            scatter(Y(i,1), Y(i,2), categeory_color_point_size_roi, 'Marker', all_cond_point_shapes{i}, 'MarkerEdgeColor', all_cond_label_colors{i});
+        end
+        hold on;
+    end
+    xlim([-0.6 0.6]); ylim([-0.6 0.6]);
+    hold off;
+
+    plot_title = [ROIname ' individual stim mds category colors n=(' num2str(numel(subjects)) ')'];
+    title(plot_title, 'Interpreter','none', 'FontSize',10);
+    ylabel('axis 1'); xlabel('axis 2');
+
+    % save figure
+    % as png
+    filename_png=[ROIname '_individual_stim_mds_category_colors.png'];
+    outfile=fullfile(OutDir, filename_png);
+    saveas(gcf, outfile, 'png')
+    saveas(gcf, fullfile(group_analysis_dir, filename_png), 'png')
+    % as svg
+    filename_svg=[ROIname '_individual_stim_mds_category_colors.svg'];
+    outfile=fullfile(OutDir, filename_svg);
+    saveas(gcf, outfile, 'svg')
+    saveas(gcf, fullfile(group_analysis_dir, filename_svg), 'svg')
+    % as figure
+    filename_fig=[ROIname '_individual_stim_mds_category_colors.fig'];
+    outfile=fullfile(OutDir, filename_fig);
+    savefig(gcf, outfile)
+    savefig(gcf, fullfile(group_analysis_dir, filename_fig))
+
+    close all 
+    clear mean_rsm
+    clear cmap
+    clear mean_distance_matrix
+
+end
